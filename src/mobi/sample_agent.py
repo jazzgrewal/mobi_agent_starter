@@ -75,73 +75,48 @@ class DatabricksAgent:
         try:
             df = self.spark.sql("SHOW FUNCTIONS IN vanhack.mobi_data")
             names = [r.function for r in df.collect() if hasattr(r, "function")]
-            return function_name in names
+            full_name = f"vanhack.mobi_data.{function_name}"
+            return full_name in names
         except Exception:
             # If SHOW FUNCTIONS fails for some reason, return False and let
             # the caller surface the original error.
             return False
 
-    # NOTE: site_search and site-table helpers removed — agent focuses on
-    # the core table-valued functions: live_station_status, nearby_stations,
-    # and recent_trips_by_station.
-
     # ---- low-level callers for the deployed tools -----------------
     def _call_live_status(self, station_id: str) -> Optional[Dict[str, Any]]:
-        # Try a couple of common invocation styles. Databricks resolves
-        # table-valued functions by name+signature, so a mismatch (string vs
-        # int) will produce an UnresolvedTableValuedFunction error.
+        # FIXED: Remove TABLE() wrapper - just use SELECT * FROM function_name(...)
         fn = "live_station_status"
         if not self._function_exists(fn):
             return self._format_missing_function_hint(fn)
 
         safe_station = self._escape_literal(station_id)
-        candidates = []
-        # 1) quoted string, fully qualified plain SELECT (no TABLE wrapper)
-        candidates.append(f"SELECT * FROM vanhack.mobi_data.{fn}('{safe_station}')")
-        # 2) quoted with explicit backticks (alternate quoting)
-        candidates.append(f"SELECT * FROM `vanhack`.`mobi_data`.{fn}('{safe_station}')")
-        # 3) unquoted numeric (try if station_id looks like an int)
+        # Use the correct syntax for table-valued functions in Databricks
+        sql = f"SELECT * FROM vanhack.mobi_data.{fn}('{safe_station}')"
+        
         try:
-            intval = int(station_id)
-            candidates.append(f"SELECT * FROM vanhack.mobi_data.{fn}({intval})")
-            candidates.append(f"SELECT * FROM `vanhack`.`mobi_data`.{fn}({intval})")
-        except Exception:
-            pass
-
-        last_err = None
-        for sql in candidates:
-            try:
-                df = self.spark.sql(sql)
-                rows = [r.asDict() for r in df.collect()]
-                return rows[0] if rows else None
-            except Exception as e:
-                last_err = e
-
-        # If we reach here, all candidates failed. Surface a helpful message
-        # including the original error text and advice to inspect the function
-        # signature in Databricks.
-        msg = str(last_err) if last_err is not None else "unknown error"
-        return {
-            "error": msg,
-            "hint": (
-                "Function exists but may not accept a string argument. "
-                "In a Databricks notebook run:\n"
-                "  spark.sql(\"DESCRIBE FUNCTION EXTENDED vanhack.mobi_data.live_station_status\").show()\n"
-                "or:\n"
-                "  spark.sql(\"SHOW FUNCTIONS IN vanhack.mobi_data LIKE 'live_station_status'\").show()\n"
-                "to inspect signatures. Try calling the function with the correct type "
-                "(string vs int)."
-            ),
-        }
+            df = self.spark.sql(sql)
+            rows = [r.asDict() for r in df.collect()]
+            return rows[0] if rows else None
+        except Exception as e:
+            msg = str(e)
+            return {
+                "error": msg,
+                "hint": (
+                    "Function exists but may have failed. "
+                    "In a Databricks notebook run:\n"
+                    "  spark.sql(\"DESCRIBE FUNCTION EXTENDED vanhack.mobi_data.live_station_status\").show()\n"
+                    "to inspect signatures."
+                ),
+            }
 
     def _call_nearby(self, lat: float, lon: float, radius_km: float = 1.0) -> List[Dict[str, Any]]:
+        # FIXED: Remove TABLE() wrapper
         fn = "nearby_stations"
         if not self._function_exists(fn):
             return [self._format_missing_function_hint(fn)]
 
-        sql = (
-            f"SELECT * FROM vanhack.mobi_data.{fn}({lat:.6f}, {lon:.6f}, {radius_km:.6f})"
-        )
+        sql = f"SELECT * FROM vanhack.mobi_data.{fn}({lat:.6f}, {lon:.6f}, {radius_km:.6f})"
+        
         try:
             df = self.spark.sql(sql)
             return [r.asDict() for r in df.collect()]
@@ -149,30 +124,19 @@ class DatabricksAgent:
             return [{"error": str(e), "hint": "Check function signature with SHOW/DESCRIBE in Databricks."}]
 
     def _call_recent_trips(self, station_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+        # FIXED: Remove TABLE() wrapper
         fn = "recent_trips_by_station"
         if not self._function_exists(fn):
             return [self._format_missing_function_hint(fn)]
 
         safe_station = self._escape_literal(station_id)
-        candidates = [f"SELECT * FROM vanhack.mobi_data.{fn}('{safe_station}') LIMIT {int(limit)}", \
-                     f"SELECT * FROM `vanhack`.`mobi_data`.{fn}('{safe_station}') LIMIT {int(limit)}"]
+        sql = f"SELECT * FROM vanhack.mobi_data.{fn}('{safe_station}') LIMIT {int(limit)}"
+        
         try:
-            intval = int(station_id)
-            candidates.append(f"SELECT * FROM vanhack.mobi_data.{fn}({intval}) LIMIT {int(limit)}")
-            candidates.append(f"SELECT * FROM `vanhack`.`mobi_data`.{fn}({intval}) LIMIT {int(limit)}")
-        except Exception:
-            pass
-
-        last_err = None
-        for sql in candidates:
-            try:
-                df = self.spark.sql(sql)
-                return [r.asDict() for r in df.collect()]
-            except Exception as e:
-                last_err = e
-
-        return [{"error": str(last_err), "hint": "Inspect function signature with DESCRIBE/SHOW in Databricks."}]
-    # site_search removed — agent focuses on live status, nearby, and recent trips
+            df = self.spark.sql(sql)
+            return [r.asDict() for r in df.collect()]
+        except Exception as e:
+            return [{"error": str(e), "hint": "Inspect function signature with DESCRIBE/SHOW in Databricks."}]
 
     # ---- intent parsing -------------------------------------------
     def _parse_station_id(self, text: str) -> Optional[str]:
@@ -208,7 +172,7 @@ class DatabricksAgent:
             if coords:
                 return "nearby", {"lat": coords[0], "lon": coords[1], "radius_km": 1.0}
 
-        # docs / faq: no site_search function used — return help instead
+        # docs / faq: return help instead
         if t.endswith("?") or any(k in t for k in ("how to", "how do i", "what is", "pricing", "fare", "policy")):
             return "help", {}
 
@@ -252,8 +216,6 @@ class DatabricksAgent:
             lines = [f"{r.get('station_id')}: {r.get('station_name')} ({round(r.get('distance_km', 0),3)} km)" for r in rows]
             return {"intent": intent, "params": params, "answer": "Nearby stations:\n" + "\n".join(lines), "raw": rows}
 
-        # site_search removed; docs/FAQ questions map to help
-
         # help
         help_text = (
             "I can help with the following:\n"
@@ -269,8 +231,9 @@ def demo(spark: SparkSession):
     agent = DatabricksAgent(spark)
     queries = [
         "Are there bikes available at station 0152?",
-        "Recent trips at station 0152",
         "Find stations near 49.2827, -123.1207",
+        "Show recent trips at station 0152",
+        "How do I rent a bike?",
     ]
     for q in queries:
         print("Q:", q)
@@ -279,7 +242,7 @@ def demo(spark: SparkSession):
             print("A:", out["answer"])
             print("--- raw:", out["raw"])
         except Exception as e:
-            print("Error:", e)
+            print("Error handling message:", e)
 
 
 if __name__ == "__main__":
