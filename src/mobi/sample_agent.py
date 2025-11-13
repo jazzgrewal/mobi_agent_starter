@@ -35,8 +35,23 @@ class DatabricksAgent:
     }
     """
 
-    def __init__(self, spark: SparkSession):
+    def __init__(self, spark: SparkSession, catalog: str = "vanhack", prefer_site_table: str = "silver_site"):
+        """Create an agent bound to a SparkSession.
+
+        Args:
+            spark: active SparkSession
+            catalog: Unity Catalog name to USE (defaults to 'vanhack')
+            prefer_site_table: which site table to prefer when site_search UDTF is missing
+        """
         self.spark = spark
+        self.catalog = catalog
+        self.prefer_site_table = prefer_site_table
+        # Ensure we are using the right catalog for resolution
+        try:
+            self.spark.sql(f"USE CATALOG {self.catalog}")
+        except Exception:
+            # ignore errors here; callers can still run fully-qualified names
+            pass
 
     @staticmethod
     def _escape_literal(value: str) -> str:
@@ -53,69 +68,180 @@ class DatabricksAgent:
             ),
         }
 
+    def _function_exists(self, function_name: str) -> bool:
+        """Check Unity Catalog for a function with this name in vanhack.mobi_data.
+
+        Returns True if a function with the exact name is present. This helps
+        give better errors when signatures don't match.
+        """
+        try:
+            df = self.spark.sql("SHOW FUNCTIONS IN vanhack.mobi_data")
+            names = [r.function for r in df.collect() if hasattr(r, "function")]
+            return function_name in names
+        except Exception:
+            # If SHOW FUNCTIONS fails for some reason, return False and let
+            # the caller surface the original error.
+            return False
+
+    def _table_exists(self, table_name: str) -> bool:
+        try:
+            df = self.spark.sql(f"SHOW TABLES IN vanhack.mobi_data LIKE '{table_name}'")
+            return len(df.collect()) > 0
+        except Exception:
+            return False
+
+    def _describe_table_columns(self, table_name: str) -> List[str]:
+        """Return a list of column names for a table in vanhack.mobi_data.
+
+        If DESCRIBE TABLE fails, returns an empty list.
+        """
+        try:
+            df = self.spark.sql(f"DESCRIBE TABLE vanhack.mobi_data.{table_name}")
+            cols = [r.col_name for r in df.collect() if hasattr(r, "col_name")]
+            return cols
+        except Exception:
+            return []
+
     # ---- low-level callers for the deployed tools -----------------
     def _call_live_status(self, station_id: str) -> Optional[Dict[str, Any]]:
+        # Try a couple of common invocation styles. Databricks resolves
+        # table-valued functions by name+signature, so a mismatch (string vs
+        # int) will produce an UnresolvedTableValuedFunction error.
+        fn = "live_station_status"
+        if not self._function_exists(fn):
+            return self._format_missing_function_hint(fn)
+
         safe_station = self._escape_literal(station_id)
-        sql = (
-            "SELECT * FROM TABLE(vanhack.mobi_data.live_station_status('")
-            + safe_station
-            + "'))"
-        )
+        candidates = []
+        # 1) quoted string, fully qualified with backticks
+        candidates.append(f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}('{safe_station}'))")
+        # 2) unquoted numeric (try if station_id looks like an int)
         try:
-            df = self.spark.sql(sql)
-            rows = [r.asDict() for r in df.collect()]
-            return rows[0] if rows else None
-        except Exception as e:
-            msg = str(e)
-            if "live_station_status" in msg and "not found" in msg.lower():
-                return self._format_missing_function_hint("live_station_status")
-            return {"error": msg}
+            intval = int(station_id)
+            candidates.append(f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}({intval}))")
+        except Exception:
+            pass
+
+        last_err = None
+        for sql in candidates:
+            try:
+                df = self.spark.sql(sql)
+                rows = [r.asDict() for r in df.collect()]
+                return rows[0] if rows else None
+            except Exception as e:
+                last_err = e
+
+        # If we reach here, all candidates failed. Surface a helpful message
+        # including the original error text and advice to inspect the function
+        # signature in Databricks.
+        msg = str(last_err) if last_err is not None else "unknown error"
+        return {
+            "error": msg,
+            "hint": (
+                "Function exists but may not accept a string argument. "
+                "In a Databricks notebook run:\n"
+                "  spark.sql(\"DESCRIBE FUNCTION EXTENDED vanhack.mobi_data.live_station_status\").show()\n"
+                "or:\n"
+                "  spark.sql(\"SHOW FUNCTIONS IN vanhack.mobi_data LIKE 'live_station_status'\").show()\n"
+                "to inspect signatures. Try calling the function with the correct type "
+                "(string vs int)."
+            ),
+        }
 
     def _call_nearby(self, lat: float, lon: float, radius_km: float = 1.0) -> List[Dict[str, Any]]:
+        fn = "nearby_stations"
+        if not self._function_exists(fn):
+            return [self._format_missing_function_hint(fn)]
+
         sql = (
-            "SELECT * FROM TABLE(vanhack.mobi_data.nearby_stations("
-            f"{lat:.6f}, {lon:.6f}, {radius_km:.6f}))"
+            f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}({lat:.6f}, {lon:.6f}, {radius_km:.6f}))"
         )
         try:
             df = self.spark.sql(sql)
             return [r.asDict() for r in df.collect()]
         except Exception as e:
-            msg = str(e)
-            if "nearby_stations" in msg and "not found" in msg.lower():
-                return [self._format_missing_function_hint("nearby_stations")]
-            return [{"error": msg}]
+            return [{"error": str(e), "hint": "Check function signature with SHOW/DESCRIBE in Databricks."}]
 
     def _call_recent_trips(self, station_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+        fn = "recent_trips_by_station"
+        if not self._function_exists(fn):
+            return [self._format_missing_function_hint(fn)]
+
         safe_station = self._escape_literal(station_id)
-        sql = (
-            "SELECT * FROM TABLE(vanhack.mobi_data.recent_trips_by_station('")
-            + safe_station
-            + f"')) LIMIT {int(limit)}"
-        )
+        candidates = [f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}('{safe_station}')) LIMIT {int(limit)}"]
         try:
-            df = self.spark.sql(sql)
-            return [r.asDict() for r in df.collect()]
-        except Exception as e:
-            msg = str(e)
-            if "recent_trips_by_station" in msg and "not found" in msg.lower():
-                return [self._format_missing_function_hint("recent_trips_by_station")]
-            return [{"error": msg}]
+            intval = int(station_id)
+            candidates.append(f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}({intval})) LIMIT {int(limit)}")
+        except Exception:
+            pass
+
+        last_err = None
+        for sql in candidates:
+            try:
+                df = self.spark.sql(sql)
+                return [r.asDict() for r in df.collect()]
+            except Exception as e:
+                last_err = e
+
+        return [{"error": str(last_err), "hint": "Inspect function signature with DESCRIBE/SHOW in Databricks."}]
 
     def _call_site_search(self, query: str, num_results: int = 3) -> List[Dict[str, Any]]:
-        safe_query = self._escape_literal(query)
-        sql = (
-            "SELECT * FROM TABLE(vanhack.mobi_data.site_search('")
-            + safe_query
-            + f"')) LIMIT {int(num_results)}"
-        )
-        try:
-            df = self.spark.sql(sql)
-            return [r.asDict() for r in df.collect()]
-        except Exception as e:
-            msg = str(e)
-            if "site_search" in msg and "not found" in msg.lower():
-                return [self._format_missing_function_hint("site_search")]
-            return [{"error": msg}]
+        fn = "site_search"
+        # If a site_search UDF exists, use it. Otherwise fall back to text
+        # searching the silver_site/bronze_site tables.
+        if self._function_exists(fn):
+            safe_query = self._escape_literal(query)
+            sql = f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}('{safe_query}')) LIMIT {int(num_results)}"
+            try:
+                df = self.spark.sql(sql)
+                return [r.asDict() for r in df.collect()]
+            except Exception as e:
+                return [{"error": str(e), "hint": "Function exists but failed; inspect with DESCRIBE FUNCTION."}]
+
+        # Fallback: try searching the preferred site table first, then the other
+        candidates = [self.prefer_site_table, "silver_site", "bronze_site"]
+        # dedupe while preserving order
+        seen = set()
+        tbls = []
+        for t in candidates:
+            if t not in seen:
+                seen.add(t)
+                tbls.append(t)
+
+        for tbl in tbls:
+            if not self._table_exists(tbl):
+                continue
+
+            cols = self._describe_table_columns(tbl)
+            # choose candidate title + text columns
+            title_cols = [c for c in cols if c.lower() in ("title", "name")]
+            text_cols = [c for c in cols if c.lower() in ("content", "value", "body", "text", "description")]
+            # fallback to any string-like column if none of the above
+            if not text_cols:
+                text_cols = [c for c in cols if c.lower() not in ("station_id", "lat", "lon", "trip_id")][:2]
+
+            if not text_cols:
+                continue
+
+            title_col = title_cols[0] if title_cols else text_cols[0]
+            concat_cols = ", ' ', ".join([f"COALESCE(CAST({c} AS STRING),'')" for c in text_cols])
+            safe_q = self._escape_literal(query.lower())
+            sql = (
+                f"SELECT {title_col} as title, {concat_cols} as content "
+                f"FROM vanhack.mobi_data.{tbl} "
+                f"WHERE LOWER(CONCAT({concat_cols})) LIKE '%{safe_q}%' "
+                f"LIMIT {int(num_results)}"
+            )
+            try:
+                df = self.spark.sql(sql)
+                return [r.asDict() for r in df.collect()]
+            except Exception as e:
+                # try next table if this fails
+                last_err = e
+                continue
+
+        # Nothing found or all methods failed
+        return [{"error": "No site search function or searchable site table found.", "hint": "Create site_search UDTF or populate silver_site/bronze_site tables."}]
 
     # ---- intent parsing -------------------------------------------
     def _parse_station_id(self, text: str) -> Optional[str]:
