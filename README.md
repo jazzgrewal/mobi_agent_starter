@@ -4,6 +4,8 @@ This repository gives hackathon teams a practical toolkit for exploring Vancouve
 
 Your mission: build an agentic system on Databricks that can reason about rider behaviors, station operations, or supporting content using the datasets assembled here. The playbooks in this repo give you the raw ingredients so you can focus on end-to-end automation, orchestration, and decision making.
 
+### IMPORTANT: don't forget to change the values in config.yaml to suit your environment.
+
 ## Highlights
 
 - Historical trip pipeline: scrape and download the official monthly CSVs, keep a raw archive, and merge them into a bronze Parquet table ready for Unity Catalog.
@@ -12,8 +14,8 @@ Your mission: build an agentic system on Databricks that can reason about rider 
 - Forecasting starter: `05_ml.py` walks through next-day station demand forecasting with scikit-learn and Spark interoperability.
 - Extensible scraper: reuse `src/mobi/basic_site_scraper.py` to capture first party content that can enrich features or power LLM prompts.
 
-## What Will You Do With This Data
-
+## What Will You Do With This Data?
+** Some ideas:**
 - Build an autonomous planner that ingests trip history and proposes dispatch actions for high demand stations.
 - Surface ride patterns for specific neighborhoods or events, then let an LLM powered assistant explain the insights to non technical partners.
 - Prototype a rider concierge that predicts availability, recommends nearby stations, and answers FAQs using scraped site content.
