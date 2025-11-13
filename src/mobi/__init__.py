@@ -23,6 +23,11 @@ from mobi.station_data import (
 )
 
 from mobi.basic_site_scraper import BasicSiteScraper
+from mobi.metadata_agent import (
+    analyze_and_update_table,
+    summarize_table,
+)
+from mobi.sample_agent import ChatAgent, demo as sample_agent_demo
 
 __version__ = "0.1.0"
 
@@ -40,4 +45,8 @@ __all__ = [
     "fetch_station_info_from_gbfs",
     "fetch_station_status_from_gbfs",
     "BasicSiteScraper",
+    "analyze_and_update_table",
+    "summarize_table",
+    "ChatAgent",
+    "sample_agent_demo",
 ]
