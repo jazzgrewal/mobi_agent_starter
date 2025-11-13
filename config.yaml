@@ -1,5 +1,5 @@
-catalog: max-howarth-demos
-schema: vancouver-hackathon-1125
+catalog: [FILL ME IN]
+schema: [FILL ME IN]
 raw_data_vol: raw_data
 run_web_scrape: false
 scrape_url: https://www.mobibikes.ca/en/
