@@ -5,7 +5,7 @@ class intended to be imported and used inside Databricks notebooks or Jobs.
 
 The agent routes natural-language queries to the deployed SQL/Python tools in
 `vanhack.mobi_data`: `live_station_status`, `nearby_stations`, and
-`recent_trips_by_station`, as well as the `site_search` function.
+`recent_trips_by_station`.
 
 Behavior goals:
 - Keep changes read-only (no metadata writes) by default.
@@ -35,17 +35,15 @@ class DatabricksAgent:
     }
     """
 
-    def __init__(self, spark: SparkSession, catalog: str = "vanhack", prefer_site_table: str = "silver_site"):
+    def __init__(self, spark: SparkSession, catalog: str = "vanhack"):
         """Create an agent bound to a SparkSession.
 
         Args:
             spark: active SparkSession
             catalog: Unity Catalog name to USE (defaults to 'vanhack')
-            prefer_site_table: which site table to prefer when site_search UDTF is missing
         """
         self.spark = spark
         self.catalog = catalog
-        self.prefer_site_table = prefer_site_table
         # Ensure we are using the right catalog for resolution
         try:
             self.spark.sql(f"USE CATALOG {self.catalog}")
@@ -83,24 +81,9 @@ class DatabricksAgent:
             # the caller surface the original error.
             return False
 
-    def _table_exists(self, table_name: str) -> bool:
-        try:
-            df = self.spark.sql(f"SHOW TABLES IN vanhack.mobi_data LIKE '{table_name}'")
-            return len(df.collect()) > 0
-        except Exception:
-            return False
-
-    def _describe_table_columns(self, table_name: str) -> List[str]:
-        """Return a list of column names for a table in vanhack.mobi_data.
-
-        If DESCRIBE TABLE fails, returns an empty list.
-        """
-        try:
-            df = self.spark.sql(f"DESCRIBE TABLE vanhack.mobi_data.{table_name}")
-            cols = [r.col_name for r in df.collect() if hasattr(r, "col_name")]
-            return cols
-        except Exception:
-            return []
+    # NOTE: site_search and site-table helpers removed — agent focuses on
+    # the core table-valued functions: live_station_status, nearby_stations,
+    # and recent_trips_by_station.
 
     # ---- low-level callers for the deployed tools -----------------
     def _call_live_status(self, station_id: str) -> Optional[Dict[str, Any]]:
@@ -184,64 +167,7 @@ class DatabricksAgent:
                 last_err = e
 
         return [{"error": str(last_err), "hint": "Inspect function signature with DESCRIBE/SHOW in Databricks."}]
-
-    def _call_site_search(self, query: str, num_results: int = 3) -> List[Dict[str, Any]]:
-        fn = "site_search"
-        # If a site_search UDF exists, use it. Otherwise fall back to text
-        # searching the silver_site/bronze_site tables.
-        if self._function_exists(fn):
-            safe_query = self._escape_literal(query)
-            sql = f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}('{safe_query}')) LIMIT {int(num_results)}"
-            try:
-                df = self.spark.sql(sql)
-                return [r.asDict() for r in df.collect()]
-            except Exception as e:
-                return [{"error": str(e), "hint": "Function exists but failed; inspect with DESCRIBE FUNCTION."}]
-
-        # Fallback: try searching the preferred site table first, then the other
-        candidates = [self.prefer_site_table, "silver_site", "bronze_site"]
-        # dedupe while preserving order
-        seen = set()
-        tbls = []
-        for t in candidates:
-            if t not in seen:
-                seen.add(t)
-                tbls.append(t)
-
-        for tbl in tbls:
-            if not self._table_exists(tbl):
-                continue
-
-            cols = self._describe_table_columns(tbl)
-            # choose candidate title + text columns
-            title_cols = [c for c in cols if c.lower() in ("title", "name")]
-            text_cols = [c for c in cols if c.lower() in ("content", "value", "body", "text", "description")]
-            # fallback to any string-like column if none of the above
-            if not text_cols:
-                text_cols = [c for c in cols if c.lower() not in ("station_id", "lat", "lon", "trip_id")][:2]
-
-            if not text_cols:
-                continue
-
-            title_col = title_cols[0] if title_cols else text_cols[0]
-            concat_cols = ", ' ', ".join([f"COALESCE(CAST({c} AS STRING),'')" for c in text_cols])
-            safe_q = self._escape_literal(query.lower())
-            sql = (
-                f"SELECT {title_col} as title, {concat_cols} as content "
-                f"FROM vanhack.mobi_data.{tbl} "
-                f"WHERE LOWER(CONCAT({concat_cols})) LIKE '%{safe_q}%' "
-                f"LIMIT {int(num_results)}"
-            )
-            try:
-                df = self.spark.sql(sql)
-                return [r.asDict() for r in df.collect()]
-            except Exception as e:
-                # try next table if this fails
-                last_err = e
-                continue
-
-        # Nothing found or all methods failed
-        return [{"error": "No site search function or searchable site table found.", "hint": "Create site_search UDTF or populate silver_site/bronze_site tables."}]
+    # site_search removed — agent focuses on live status, nearby, and recent trips
 
     # ---- intent parsing -------------------------------------------
     def _parse_station_id(self, text: str) -> Optional[str]:
@@ -277,9 +203,9 @@ class DatabricksAgent:
             if coords:
                 return "nearby", {"lat": coords[0], "lon": coords[1], "radius_km": 1.0}
 
-        # docs / faq
+        # docs / faq: no site_search function used — return help instead
         if t.endswith("?") or any(k in t for k in ("how to", "how do i", "what is", "pricing", "fare", "policy")):
-            return "site_search", {"query": text}
+            return "help", {}
 
         # fallback: show help
         return "help", {}
@@ -321,14 +247,7 @@ class DatabricksAgent:
             lines = [f"{r.get('station_id')}: {r.get('station_name')} ({round(r.get('distance_km', 0),3)} km)" for r in rows]
             return {"intent": intent, "params": params, "answer": "Nearby stations:\n" + "\n".join(lines), "raw": rows}
 
-        if intent == "site_search":
-            rows = self._call_site_search(params["query"], num_results=3)
-            if rows and isinstance(rows, list) and "error" in rows[0]:
-                return {"intent": intent, "params": params, "answer": "Error searching docs", "raw": rows}
-            if not rows:
-                return {"intent": intent, "params": params, "answer": "No documentation found.", "raw": rows}
-            snippets = [f"{r.get('title')}: {r.get('value')[:240]}..." for r in rows]
-            return {"intent": intent, "params": params, "answer": "Top docs:\n" + "\n\n".join(snippets), "raw": rows}
+        # site_search removed; docs/FAQ questions map to help
 
         # help
         help_text = (
@@ -336,7 +255,7 @@ class DatabricksAgent:
             "- Check live station availability: 'Are there bikes available at station 0152?'\n"
             "- Show recent trips for a station: 'Recent trips at station 0152'\n"
             "- Find nearby stations: 'Find stations near 49.2827, -123.1207'\n"
-            "- Search Mobi docs: 'How do I rent a bike?'\n"
+            "- (Docs/FAQ: ask your question; agent will show help if unclear)\n"
         )
         return {"intent": "help", "params": {}, "answer": help_text, "raw": None}
 
@@ -347,7 +266,6 @@ def demo(spark: SparkSession):
         "Are there bikes available at station 0152?",
         "Recent trips at station 0152",
         "Find stations near 49.2827, -123.1207",
-        "How do I rent a bike?",
     ]
     for q in queries:
         print("Q:", q)
