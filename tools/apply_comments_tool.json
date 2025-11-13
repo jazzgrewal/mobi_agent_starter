@@ -1,0 +1,14 @@
+{
+  "name": "apply_table_comments",
+  "description": "Trigger a Databricks job to apply selected column comments to a table (requires confirmation).",
+  "connector": "databricks-jobs-api",
+  "job_id": "<YOUR_JOB_ID>",
+  "inputs": [
+    {"name": "catalog", "type": "string", "required": true},
+    {"name": "schema", "type": "string", "required": true},
+    {"name": "table", "type": "string", "required": true},
+    {"name": "columns", "type": "string", "required": true, "description": "Comma-separated list of columns to apply"},
+    {"name": "actor", "type": "string", "required": false}
+  ],
+  "output": {"type": "json", "description": "Job run result with per-column status"}
+}

@@ -1,0 +1,10 @@
+{
+  "name": "get_recent_trips",
+  "description": "Call Databricks SQL function recent_trips_by_station(station_id) to fetch recent trips.",
+  "connector": "databricks-sql",
+  "sql": "SELECT * FROM recent_trips_by_station(:station_id)",
+  "inputs": [
+    {"name": "station_id", "type": "string", "required": true}
+  ],
+  "output": {"type": "table", "description": "Recent trips rows"}
+}

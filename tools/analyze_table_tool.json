@@ -1,0 +1,13 @@
+{
+  "name": "analyze_table",
+  "description": "Run a dry-run analysis of a Databricks table and return suggested column comments.",
+  "connector": "databricks-notebook",
+  "notebook_path": "/Repos/<your-repo>/notebooks/analyze_table",
+  "inputs": [
+    {"name": "catalog", "type": "string", "required": true},
+    {"name": "schema", "type": "string", "required": true},
+    {"name": "table", "type": "string", "required": true},
+    {"name": "sample_limit", "type": "int", "required": false, "default": 2000}
+  ],
+  "output": {"type": "json", "description": "Array of suggestions per column"}
+}
