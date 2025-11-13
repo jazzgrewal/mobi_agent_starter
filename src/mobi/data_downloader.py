@@ -137,22 +137,19 @@ def download_file(
 ) -> Path:
     """
     Download a file from a URL to the specified output path.
-
-    Args:
-        url: URL of the file to download
-        output_path: Local path where the file should be saved
-        timeout: Request timeout in seconds
-        chunk_size: Size of chunks to download at a time (bytes)
-
-    Returns:
-        Path to the downloaded file
-
-    Raises:
-        MobiDataDownloaderError: If the download fails
     """
     try:
         response = requests.get(url, timeout=timeout, stream=True)
         response.raise_for_status()
+
+        # 🔍 Quick check: skip HTML error/virus-scan pages that pretend to be files
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "text/html" in content_type:
+            # This is almost certainly not a real CSV/XLSX, but an interstitial page
+            raise MobiDataDownloaderError(
+                f"Got HTML content instead of a data file from {url} "
+                f"(Content-Type: {content_type})"
+            )
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -167,6 +164,7 @@ def download_file(
         raise MobiDataDownloaderError(f"Failed to download {url}: {e}")
     except IOError as e:
         raise MobiDataDownloaderError(f"Failed to save file to {output_path}: {e}")
+
 
 
 def download_all_trip_data(
