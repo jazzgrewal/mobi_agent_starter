@@ -96,12 +96,15 @@ class DatabricksAgent:
 
         safe_station = self._escape_literal(station_id)
         candidates = []
-        # 1) quoted string, fully qualified with backticks
-        candidates.append(f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}('{safe_station}'))")
-        # 2) unquoted numeric (try if station_id looks like an int)
+        # 1) quoted string, fully qualified plain SELECT (no TABLE wrapper)
+        candidates.append(f"SELECT * FROM vanhack.mobi_data.{fn}('{safe_station}')")
+        # 2) quoted with explicit backticks (alternate quoting)
+        candidates.append(f"SELECT * FROM `vanhack`.`mobi_data`.{fn}('{safe_station}')")
+        # 3) unquoted numeric (try if station_id looks like an int)
         try:
             intval = int(station_id)
-            candidates.append(f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}({intval}))")
+            candidates.append(f"SELECT * FROM vanhack.mobi_data.{fn}({intval})")
+            candidates.append(f"SELECT * FROM `vanhack`.`mobi_data`.{fn}({intval})")
         except Exception:
             pass
 
@@ -137,7 +140,7 @@ class DatabricksAgent:
             return [self._format_missing_function_hint(fn)]
 
         sql = (
-            f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}({lat:.6f}, {lon:.6f}, {radius_km:.6f}))"
+            f"SELECT * FROM vanhack.mobi_data.{fn}({lat:.6f}, {lon:.6f}, {radius_km:.6f})"
         )
         try:
             df = self.spark.sql(sql)
@@ -151,10 +154,12 @@ class DatabricksAgent:
             return [self._format_missing_function_hint(fn)]
 
         safe_station = self._escape_literal(station_id)
-        candidates = [f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}('{safe_station}')) LIMIT {int(limit)}"]
+        candidates = [f"SELECT * FROM vanhack.mobi_data.{fn}('{safe_station}') LIMIT {int(limit)}", \
+                     f"SELECT * FROM `vanhack`.`mobi_data`.{fn}('{safe_station}') LIMIT {int(limit)}"]
         try:
             intval = int(station_id)
-            candidates.append(f"SELECT * FROM TABLE(`vanhack`.`mobi_data`.{fn}({intval})) LIMIT {int(limit)}")
+            candidates.append(f"SELECT * FROM vanhack.mobi_data.{fn}({intval}) LIMIT {int(limit)}")
+            candidates.append(f"SELECT * FROM `vanhack`.`mobi_data`.{fn}({intval}) LIMIT {int(limit)}")
         except Exception:
             pass
 
