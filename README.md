@@ -1,3 +1,5 @@
+![Mobi Vancouver Bike Share banner](img/header.png)
+
 # 🚴‍♂️ Mobi Vancouver Bike Share — Databricks Hackathon Toolkit
 
 This repository provides a lightweight toolkit to help hackathon teams explore and build with Vancouver’s **Mobi by Rogers** bike share data. Everything here is designed for **Databricks Serverless**, **Unity Catalog**, and **Databricks Vector Search**, with strong emphasis on **Genie rooms** as your team’s primary agentic interface.
